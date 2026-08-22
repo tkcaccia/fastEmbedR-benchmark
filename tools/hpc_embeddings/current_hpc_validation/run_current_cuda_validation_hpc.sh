@@ -23,11 +23,15 @@ OUT_DIR="${BASE_DIR}/fastEmbedR-results/${RUN_ID}/cuda"
 INPUT_ROOT="${BASE_DIR}/fastEmbedR-input"
 CACHE_DIR="${INPUT_ROOT}/precomputed"
 GRAPH_DIR="${BASE_DIR}/fastEmbedR-results/${RUN_ID}/cpu_cuda_graph"
+IDENTITY="${BUNDLE_DIR}/validated_release_identity.env"
 
 [[ -f "${BUNDLE_DIR}/INSTALL_OK" ]] || {
   echo "Current package installation is not validated." >&2
   exit 1
 }
+[[ -f "${IDENTITY}" ]] || { echo "Missing validated identity: ${IDENTITY}" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "${IDENTITY}"
 
 mkdir -p "${OUT_DIR}" "${INPUT_ROOT}" "${CACHE_DIR}" "${GRAPH_DIR}" \
   "${BASE_DIR}/benchmark_logs"
@@ -45,6 +49,14 @@ export APPTAINERENV_OPENBLAS_NUM_THREADS=4
 export APPTAINERENV_MKL_NUM_THREADS=4
 export APPTAINERENV_RCPP_PARALLEL_NUM_THREADS=4
 export APPTAINERENV_LD_LIBRARY_PATH="/opt/rapids/lib:/opt/faiss/lib:/usr/local/cuda/lib64:/opt/conda/lib:/opt/conda/targets/x86_64-linux/lib"
+export APPTAINERENV_FASTEMBEDR_RELEASE_VERSION="${FASTEMBEDR_RELEASE_VERSION}"
+export APPTAINERENV_FASTEMBEDR_RELEASE_COMMIT="${FASTEMBEDR_RELEASE_COMMIT}"
+export APPTAINERENV_FASTEMBEDR_SOURCE_ARCHIVE_SHA256="${FASTEMBEDR_SOURCE_ARCHIVE_SHA256}"
+export APPTAINERENV_FASTEMBEDR_PACKAGE_TARBALL_SHA256="${FASTEMBEDR_PACKAGE_TARBALL_SHA256}"
+export APPTAINERENV_FASTEMBEDR_DLL_SHA256="${FASTEMBEDR_DLL_SHA256}"
+export APPTAINERENV_FASTEMBEDR_IMAGE_SHA256="${FASTEMBEDR_IMAGE_SHA256}"
+export APPTAINERENV_FASTEMBEDR_BENCHMARK_COMMIT="${FASTEMBEDR_BENCHMARK_COMMIT}"
+export APPTAINERENV_FASTEMBEDR_ENFORCE_RELEASE_LOCK=1
 
 "${CONTAINER}" exec --nv \
   --bind "${BASE_DIR}:${BASE_DIR}" \

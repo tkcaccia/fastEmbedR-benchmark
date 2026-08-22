@@ -147,6 +147,70 @@ set_threads <- function(value) {
 }
 set_threads(threads)
 
+sha256_file <- function(path) {
+  if (!file.exists(path)) stop("Cannot hash missing file: ", path, call. = FALSE)
+  command <- Sys.which("sha256sum")
+  arguments <- path
+  if (!nzchar(command)) {
+    command <- Sys.which("shasum")
+    arguments <- c("-a", "256", path)
+  }
+  if (!nzchar(command)) stop("No SHA-256 utility is available.", call. = FALSE)
+  output <- system2(command, arguments, stdout = TRUE, stderr = TRUE)
+  status <- attr(output, "status") %||% 0L
+  if (!identical(as.integer(status), 0L) || !length(output)) {
+    stop("SHA-256 calculation failed for ", path, call. = FALSE)
+  }
+  strsplit(trimws(output[[1L]]), "[[:space:]]+")[[1L]][[1L]]
+}
+
+release_identity <- function() {
+  list(
+    version = Sys.getenv("FASTEMBEDR_RELEASE_VERSION", unset = ""),
+    commit = Sys.getenv("FASTEMBEDR_RELEASE_COMMIT", unset = ""),
+    source_archive_sha256 = Sys.getenv(
+      "FASTEMBEDR_SOURCE_ARCHIVE_SHA256", unset = ""
+    ),
+    package_tarball_sha256 = Sys.getenv(
+      "FASTEMBEDR_PACKAGE_TARBALL_SHA256", unset = ""
+    ),
+    dll_sha256 = Sys.getenv("FASTEMBEDR_DLL_SHA256", unset = ""),
+    image_sha256 = Sys.getenv("FASTEMBEDR_IMAGE_SHA256", unset = ""),
+    benchmark_commit = Sys.getenv("FASTEMBEDR_BENCHMARK_COMMIT", unset = "")
+  )
+}
+
+assert_release_identity <- function() {
+  if (!as_bool(Sys.getenv("FASTEMBEDR_ENFORCE_RELEASE_LOCK", unset = "FALSE"))) {
+    return(invisible(release_identity()))
+  }
+  identity <- release_identity()
+  missing <- names(identity)[!nzchar(unlist(identity, use.names = FALSE))]
+  if (length(missing)) {
+    stop("Incomplete release lock: ", paste(missing, collapse = ", "), call. = FALSE)
+  }
+  if (!requireNamespace("fastEmbedR", quietly = TRUE)) {
+    stop("The release-locked fastEmbedR installation is unavailable.", call. = FALSE)
+  }
+  installed <- as.character(utils::packageVersion("fastEmbedR"))
+  if (!identical(installed, identity$version)) {
+    stop(
+      "Installed fastEmbedR version ", installed,
+      " does not match release lock ", identity$version, ".", call. = FALSE
+    )
+  }
+  dll <- system.file(
+    "libs", paste0("fastEmbedR", .Platform$dynlib.ext), package = "fastEmbedR"
+  )
+  observed_dll_sha256 <- sha256_file(dll)
+  if (!identical(observed_dll_sha256, identity$dll_sha256)) {
+    stop("Installed fastEmbedR binary does not match the release lock.", call. = FALSE)
+  }
+  invisible(identity)
+}
+
+locked_release <- assert_release_identity()
+
 log_file <- file.path(out_dir, "benchmark.log")
 log_msg <- function(...) {
   line <- paste0(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), " ", sprintf(...))
@@ -565,6 +629,24 @@ method_is_umap <- function(method) identical(method_family(method), "UMAP")
 method_threads <- function(method, requested) {
   if (method_backend(method) %in% c("cuda", "metal")) return(NA_integer_)
   as.integer(requested)
+}
+
+observed_fit_backend <- function(fit, requested) {
+  config <- attr(fit, "fastEmbedR_config", exact = TRUE)
+  candidates <- c(
+    if (is.list(config)) config$optimizer_backend %||% config$backend else NULL,
+    if (is.list(fit)) fit$backend %||% fit$parameters$backend else NULL,
+    attr(fit, "backend", exact = TRUE),
+    requested
+  )
+  candidates <- as.character(candidates)
+  candidates <- candidates[!is.na(candidates) & nzchar(candidates)]
+  observed <- if (length(candidates)) candidates[[1L]] else NA_character_
+  if (is.na(observed)) return(observed)
+  if (grepl("^cpu", observed, ignore.case = TRUE)) return("cpu")
+  if (grepl("metal", observed, ignore.case = TRUE)) return("metal")
+  if (grepl("cuda|cuvs|raft", observed, ignore.case = TRUE)) return("cuda")
+  observed
 }
 
 parameter_record <- function(method, requested_threads) {
@@ -1502,6 +1584,16 @@ worker_result_template <- function(dataset, method, status = "failed", error = N
   data.frame(
     dataset = dataset_alias(dataset), method = method,
     family = method_family(method), backend = method_backend(method),
+    requested_backend = method_backend(method), actual_backend = NA_character_,
+    fastEmbedR_version = locked_release$version %||% NA_character_,
+    fastEmbedR_commit = locked_release$commit %||% NA_character_,
+    fastEmbedR_source_archive_sha256 =
+      locked_release$source_archive_sha256 %||% NA_character_,
+    fastEmbedR_package_tarball_sha256 =
+      locked_release$package_tarball_sha256 %||% NA_character_,
+    fastEmbedR_dll_sha256 = locked_release$dll_sha256 %||% NA_character_,
+    fastEmbedR_image_sha256 = locked_release$image_sha256 %||% NA_character_,
+    benchmark_commit = locked_release$benchmark_commit %||% NA_character_,
     timing_scope = method_scope(method), seed = seed,
     requested_threads = threads, effective_threads = method_threads(method, threads),
     status = status, error = error,
@@ -1582,6 +1674,14 @@ worker_main <- function() {
   )
   scores <- score_embedding(data, layout, method_family(method), dataset)
   row <- worker_result_template(dataset, method, status = "success", error = NA_character_)
+  row$actual_backend <- observed_fit_backend(result$fit, row$requested_backend)
+  if (startsWith(method, "fastEmbedR") &&
+      !identical(row$actual_backend[[1L]], row$requested_backend[[1L]])) {
+    stop(
+      "Backend mismatch for ", method, ": requested ", row$requested_backend[[1L]],
+      ", observed ", row$actual_backend[[1L]], ".", call. = FALSE
+    )
+  }
   row$n <- nrow(layout)
   row$p <- ncol(data$float$data %||% data$standard$data)
   row$total_runtime_sec <- result$elapsed_sec
@@ -2132,10 +2232,10 @@ backend_validation_table <- function(validation_backends) {
       affinity <- publication_edge_agreement(reference_affinity, candidate_affinity)
       for (graph_mode in c("fuzzy", "binary")) {
         reference_graph <- publication_umap_edges(
-          reference_knn, graph_mode = graph_mode, n_threads = max(threads_grid)
+          reference_knn, graph_mode = graph_mode, n.cores = max(threads_grid)
         )
         candidate_graph <- publication_umap_edges(
-          candidate, graph_mode = graph_mode, n_threads = max(threads_grid)
+          candidate, graph_mode = graph_mode, n.cores = max(threads_grid)
         )
         graph <- publication_edge_agreement(reference_graph, candidate_graph)
         rows[[length(rows) + 1L]] <- data.frame(
@@ -2173,13 +2273,13 @@ reference_graph_validation_table <- function() {
     dst <- cbind(0, knn$distances)
     for (graph_mode in c("fuzzy", "binary")) {
       fast_graph <- publication_umap_edges(
-        knn, graph_mode = graph_mode, n_threads = max(threads_grid)
+        knn, graph_mode = graph_mode, n.cores = max(threads_grid)
       )
       uwot_graph <- tryCatch(
         uwot::similarity_graph(
           X = NULL, n_neighbors = ncol(knn$indices),
           nn_method = list(idx = idx, dist = dst),
-          n_threads = max(threads_grid),
+          n.cores = max(threads_grid),
           binary_edge_weights = identical(graph_mode, "binary"),
           verbose = FALSE
         ),
@@ -2248,14 +2348,7 @@ pca_agreement_table <- function(runs) {
 
 write_reproducibility <- function() {
   writeLines(capture.output(utils::sessionInfo()), file.path(out_dir, "sessionInfo.txt"))
-  git_commit <- tryCatch(
-    trimws(suppressWarnings(system2(
-      "git", c("-C", dirname(script_dir), "rev-parse", "HEAD"),
-      stdout = TRUE, stderr = FALSE
-    ))),
-    error = function(e) NA_character_
-  )
-  if (!length(git_commit) || !nzchar(git_commit[[1L]])) git_commit <- NA_character_
+  git_commit <- locked_release$benchmark_commit %||% NA_character_
   nvidia <- tryCatch(
     system2("nvidia-smi", c("--query-gpu=name,driver_version,memory.total,compute_cap", "--format=csv,noheader"), stdout = TRUE, stderr = TRUE),
     error = function(e) NA_character_
@@ -2282,6 +2375,13 @@ write_reproducibility <- function() {
   lines <- c(
     paste0("generated_at=", format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")),
     paste0("git_commit=", git_commit),
+    paste0("release_version=", locked_release$version %||% NA_character_),
+    paste0("release_commit=", locked_release$commit %||% NA_character_),
+    paste0("release_source_archive_sha256=", locked_release$source_archive_sha256 %||% NA_character_),
+    paste0("release_package_tarball_sha256=", locked_release$package_tarball_sha256 %||% NA_character_),
+    paste0("release_dll_sha256=", locked_release$dll_sha256 %||% NA_character_),
+    paste0("release_image_sha256=", locked_release$image_sha256 %||% NA_character_),
+    paste0("benchmark_commit=", locked_release$benchmark_commit %||% NA_character_),
     paste0("container_image_path=", Sys.getenv(
       "FASTEMBEDR_IMAGE_PATH", unset = NA_character_
     )),

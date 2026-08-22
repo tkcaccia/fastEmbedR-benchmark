@@ -262,7 +262,7 @@ worker_graph <- function() {
       k = width,
       metric = "euclidean",
       backend = backend,
-      n_threads = threads
+      n.cores = threads
     )
   })[["elapsed"]]
   graph_elapsed <- system.time({
@@ -270,7 +270,7 @@ worker_graph <- function() {
       knn,
       k = width,
       weight = "snn",
-      n_threads = threads
+      n.cores = threads
     )
   })[["elapsed"]]
   init_elapsed <- system.time({
@@ -279,7 +279,7 @@ worker_graph <- function() {
       backend = backend,
       graph_mode = "fuzzy",
       seed = 4L,
-      n_threads = threads
+      n.cores = threads
     )
   })[["elapsed"]]
   optimizer_elapsed <- system.time({
@@ -287,7 +287,7 @@ worker_graph <- function() {
       initialization,
       backend = backend,
       seed = 4L,
-      n_threads = threads
+      n.cores = threads
     )
   })[["elapsed"]]
 
@@ -300,9 +300,9 @@ worker_graph <- function() {
     common_init_sec <- system.time({
       common_layout <- umap_knn(
         cpu_initialization,
-        backend = "metal",
+        backend = backend,
         seed = 4L,
-        n_threads = threads
+        n.cores = threads
       )
     })[["elapsed"]]
     common_init_layout_file <- paste0(stem, "_common_init_layout.rds")

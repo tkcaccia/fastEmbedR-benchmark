@@ -4,7 +4,11 @@ set -euo pipefail
 
 BUNDLE_DIR="${BUNDLE_DIR:-/scratch/firenze/NN/current_fastembedr_validation}"
 R_LIB="${FASTEMBEDR_CURRENT_RLIB:-${BUNDLE_DIR}/Rlib}"
-TARBALL="${BUNDLE_DIR}/fastEmbedR_0.99.0.tar.gz"
+RELEASE_LOCK="${BUNDLE_DIR}/release_lock.env"
+[[ -f "${RELEASE_LOCK}" ]] || { echo "Missing release lock: ${RELEASE_LOCK}" >&2; exit 1; }
+# shellcheck disable=SC1090
+source "${RELEASE_LOCK}"
+TARBALL="${BUNDLE_DIR}/fastEmbedR_${FASTEMBEDR_RELEASE_VERSION}.tar.gz"
 
 [[ -f "${TARBALL}" ]] || {
   echo "Missing package tarball: ${TARBALL}" >&2
@@ -36,8 +40,13 @@ R_PROFILE_USER="${BUNDLE_DIR}/Rprofile.current" \
 /opt/conda/bin/Rscript -e '
 library(fastEmbedR)
 cat("fastEmbedR version:", as.character(packageVersion("fastEmbedR")), "\n")
-print(fastEmbedR:::backend_info())
-stopifnot(fastEmbedR:::embedding_cuda_available_cpp())
-stopifnot(fastEmbedR:::native_cuda_knn_available_cpp())
+stopifnot(identical(
+  as.character(packageVersion("fastEmbedR")),
+  Sys.getenv("FASTEMBEDR_RELEASE_VERSION")
+))
+capabilities <- fastEmbedR_capabilities()
+print(capabilities)
+cuda <- capabilities[capabilities$backend == "cuda", , drop = FALSE]
+stopifnot(nrow(cuda) == 1L, cuda$knn_available, cuda$embedding_available)
 stopifnot("umap_init" %in% getNamespaceExports("fastEmbedR"))
 '

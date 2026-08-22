@@ -200,12 +200,12 @@ publication_tsne_kl <- function(layout, affinity_edges) {
   sum(p_edge * log(p_edge / q_edge))
 }
 
-publication_umap_edges <- function(knn, graph_mode = "fuzzy", n_threads = 1L) {
+publication_umap_edges <- function(knn, graph_mode = "fuzzy", n.cores = 1L) {
   prepared <- fastEmbedR::prepare_umap_knn(
     knn,
     graph_mode = graph_mode,
     backend = "cpu",
-    n_threads = as.integer(n_threads)
+    n.cores = as.integer(n.cores)
   )
   graph <- prepared$graph
   offsets <- as.integer(graph$offsets)
